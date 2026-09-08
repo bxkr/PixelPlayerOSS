@@ -20,6 +20,8 @@ import com.lostf1sh.pixelplayeross.data.repository.ArtistImageRepository
 import com.lostf1sh.pixelplayeross.presentation.viewmodel.LibraryStateHolder
 import com.lostf1sh.pixelplayeross.presentation.viewmodel.ThemeStateHolder
 import com.lostf1sh.pixelplayeross.utils.AlbumArtCacheManager
+import com.lostf1sh.pixelplayeross.utils.FolderAlbumArtUpdate
+import com.lostf1sh.pixelplayeross.utils.resolveFolderAlbumArtUpdate
 import com.lostf1sh.pixelplayeross.utils.AlbumArtUtils
 import com.lostf1sh.pixelplayeross.utils.AppLocaleManager
 import com.lostf1sh.pixelplayeross.utils.CrashHandler
@@ -62,6 +64,9 @@ class PixelPlayerApplication : Application(), ImageLoaderFactory, Configuration.
 
     @Inject
     lateinit var userPreferencesRepository: dagger.Lazy<UserPreferencesRepository>
+
+    @Inject
+    lateinit var imageCacheManager: dagger.Lazy<com.lostf1sh.pixelplayeross.data.media.ImageCacheManager>
 
     @Inject
     lateinit var syncManager: dagger.Lazy<com.lostf1sh.pixelplayeross.data.worker.SyncManager>
@@ -133,9 +138,25 @@ class PixelPlayerApplication : Application(), ImageLoaderFactory, Configuration.
             if (savedLimit != null) {
                 AlbumArtCacheManager.configuredCacheLimitMb = savedLimit.toLong()
             }
-            AlbumArtUtils.folderAlbumArtEnabled = runCatching {
-                userPreferencesRepository.get().useFolderAlbumArtFlow.first()
-            }.getOrDefault(false)
+        }
+
+        // Collected rather than read once: the preference can also change underneath us, most
+        // notably when a backup restore writes it straight into DataStore. A stale mirror would
+        // leave the toggle reporting one thing while artwork resolution did another.
+        startupScope.launch {
+            userPreferencesRepository.get().useFolderAlbumArtFlow.collect { enabled ->
+                val update = resolveFolderAlbumArtUpdate(
+                    previous = AlbumArtUtils.folderAlbumArtPreferenceOrNull(),
+                    observed = enabled
+                )
+                if (update == FolderAlbumArtUpdate.IGNORE) return@collect
+                AlbumArtUtils.setFolderAlbumArtPreference(enabled)
+                // Every cached cover and "no art" marker was resolved under the old precedence.
+                if (update == FolderAlbumArtUpdate.MIRROR_AND_INVALIDATE) {
+                    AlbumArtCacheManager.clearAllCache(this@PixelPlayerApplication)
+                    imageCacheManager.get().clearAllCoverArtCaches()
+                }
+            }
         }
     }
 

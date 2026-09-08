@@ -1,14 +1,19 @@
 package com.lostf1sh.pixelplayeross.utils
 
+import android.Manifest
 import android.content.ContentUris
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import com.lostf1sh.pixelplayeross.data.media.AudioMetadataReader
+import com.lostf1sh.pixelplayeross.data.preferences.UserPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,11 +49,21 @@ object AlbumArtUtils {
     /**
      * Mirrors `UserPreferencesRepository.useFolderAlbumArtFlow`. AlbumArtUtils is a plain object
      * reached from a Coil fetcher and a ContentProvider, so it cannot take a DI dependency; the
-     * value is pushed in from PixelPlayerApplication at startup and from SettingsViewModel on
-     * change, the same way as [AlbumArtCacheManager.configuredCacheLimitMb].
+     * value is pushed in from PixelPlayerApplication and from SettingsViewModel, the same way as
+     * [AlbumArtCacheManager.configuredCacheLimitMb].
+     *
+     * Null means "not read yet" rather than "disabled" — treating the two alike would let an
+     * artwork request that beats startup cache the wrong result permanently.
      */
     @Volatile
-    var folderAlbumArtEnabled: Boolean = false
+    private var folderAlbumArtPreference: Boolean? = null
+
+    fun setFolderAlbumArtPreference(enabled: Boolean) {
+        folderAlbumArtPreference = enabled
+    }
+
+    /** The mirrored preference, or null if it has not been read yet. */
+    fun folderAlbumArtPreferenceOrNull(): Boolean? = folderAlbumArtPreference
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     // Tracks cache files currently being shrunk so rapid repeated loads of the same oversized
@@ -84,8 +99,8 @@ object AlbumArtUtils {
     /**
      * Main function to get album art for local songs.
      *
-     * Local artwork is embedded-only unless the user opts in to folder covers via
-     * [folderAlbumArtEnabled]. That opt-in exists because falling back to folder images such as
+     * Local artwork is embedded-only unless the user opts in to folder covers, which
+     * [isFolderAlbumArtEnabled] resolves. That opt-in exists because falling back to folder images such as
      * cover.jpg/thumb.jpg unasked can pick unrelated Gallery files when music is stored in mixed
      * directories, and can duplicate the same image across unrelated tracks.
      */
@@ -198,7 +213,7 @@ object AlbumArtUtils {
 
         // Folder covers outrank embedded pictures when the user has opted in: a cover.jpg is
         // usually the full-resolution original, while embedded art is often a downscaled copy.
-        readExternalAlbumArtBytes(resolvedPath)?.let { bytes ->
+        readExternalAlbumArtBytes(resolvedPath, isFolderAlbumArtEnabled(appContext))?.let { bytes ->
             cacheAlbumArtBytes(appContext, bytes, songId)
             return cachedFile.takeIf { it.exists() && it.length() > 0 }
         }
@@ -262,7 +277,7 @@ object AlbumArtUtils {
             noArtFile.delete()
         }
 
-        if (readExternalAlbumArtBytes(filePath) != null) {
+        if (readExternalAlbumArtBytes(filePath, isFolderAlbumArtEnabled(appContext)) != null) {
             noArtFile.delete()
             return true
         }
@@ -291,15 +306,37 @@ object AlbumArtUtils {
     }
 
     /**
-     * Artwork bytes from a cover image sitting next to the audio file, or null when the user has
-     * not opted in, no trusted cover exists, or the candidate is too large to bound safely.
+     * Whether folder covers should be used right now: the user opted in *and* the app can
+     * actually read image files.
      *
-     * On API 33+ reading these needs READ_MEDIA_IMAGES: without it [findExternalAlbumArtFile]'s
-     * `exists()` check simply fails, so this degrades to null rather than throwing.
+     * The permission is checked rather than assumed because it can be taken away after the user
+     * opts in — revoked in system settings, or auto-reset while the app goes unused. Without the
+     * check the stored preference would keep claiming the feature is on while every folder read
+     * silently failed.
+     */
+    internal fun isFolderAlbumArtEnabled(appContext: Context): Boolean {
+        val preferred = folderAlbumArtPreference
+            ?: UserPreferencesRepository.readUseFolderAlbumArtBlocking(appContext)
+                .also { folderAlbumArtPreference = it }
+        return preferred && canReadImageFiles(appContext)
+    }
+
+    /** Below API 33 the already-granted READ_EXTERNAL_STORAGE covers sibling image files. */
+    internal fun canReadImageFiles(appContext: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.READ_MEDIA_IMAGES
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * Artwork bytes from a cover image sitting next to the audio file, or null when folder covers
+     * are not in use, no trusted cover exists, or the candidate is too large to bound safely.
      */
     internal fun readExternalAlbumArtBytes(
         filePath: String,
-        enabled: Boolean = folderAlbumArtEnabled,
+        enabled: Boolean,
         maxBytes: Long = MAX_EXTERNAL_ART_BYTES
     ): ByteArray? {
         if (!enabled) return null
@@ -623,4 +660,25 @@ internal fun resolveAlbumArtUriForLibraryScan(
         return null
     }
     return LocalArtworkUri.buildSongUri(songId)
+}
+
+/** What the app-wide preference observer should do with a value it just observed. */
+internal enum class FolderAlbumArtUpdate {
+    /** Already mirrored — whoever set it handled any invalidation. */
+    IGNORE,
+
+    /** First value seen this process; nothing was cached under a different setting yet. */
+    MIRROR_ONLY,
+
+    /** Changed out-of-band (a backup restore), so cached artwork is now stale. */
+    MIRROR_AND_INVALIDATE
+}
+
+internal fun resolveFolderAlbumArtUpdate(
+    previous: Boolean?,
+    observed: Boolean
+): FolderAlbumArtUpdate = when {
+    previous == observed -> FolderAlbumArtUpdate.IGNORE
+    previous == null -> FolderAlbumArtUpdate.MIRROR_ONLY
+    else -> FolderAlbumArtUpdate.MIRROR_AND_INVALIDATE
 }

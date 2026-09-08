@@ -927,9 +927,13 @@ class SettingsViewModel @Inject constructor(
      */
     fun setUseFolderAlbumArt(enabled: Boolean) {
         viewModelScope.launch {
-            if (enabled == useFolderAlbumArt.value) return@launch
+            // Deliberately not skipped when the stored value already matches: re-enabling after
+            // the image permission was granted back leaves the preference unchanged but still
+            // needs the caches rebuilt, because everything was resolved without folder access.
+            // Mirrored before the write so the app-wide observer sees its own value and does not
+            // invalidate a second time.
+            com.lostf1sh.pixelplayeross.utils.AlbumArtUtils.setFolderAlbumArtPreference(enabled)
             userPreferencesRepository.setUseFolderAlbumArt(enabled)
-            com.lostf1sh.pixelplayeross.utils.AlbumArtUtils.folderAlbumArtEnabled = enabled
             com.lostf1sh.pixelplayeross.utils.AlbumArtCacheManager.clearAllCache(context)
             imageCacheManager.clearAllCoverArtCaches()
             syncManager.fullSync()

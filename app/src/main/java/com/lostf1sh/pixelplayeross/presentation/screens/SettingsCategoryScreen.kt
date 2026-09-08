@@ -279,6 +279,10 @@ fun SettingsCategoryScreen(
     } else {
         null
     }
+    // Shown as off when the permission is gone even though the preference is still true: the
+    // feature genuinely is not working in that state, and tapping it re-requests access.
+    val hasImagesPermission =
+        imagesPermissionState == null || imagesPermissionState.status.isGranted
     val onFolderAlbumArtToggled: (Boolean) -> Unit = { enabled ->
         when {
             !enabled -> settingsViewModel.setUseFolderAlbumArt(false)
@@ -560,7 +564,7 @@ fun SettingsCategoryScreen(
                                 SwitchSettingItem(
                                     title = stringResource(R.string.setcat_folder_album_art_title),
                                     subtitle = stringResource(R.string.setcat_folder_album_art_subtitle),
-                                    checked = useFolderAlbumArt,
+                                    checked = useFolderAlbumArt && hasImagesPermission,
                                     onCheckedChange = onFolderAlbumArtToggled,
                                     leadingIcon = { Icon(Icons.Outlined.Image, null, tint = MaterialTheme.colorScheme.secondary) },
                                     modifier = Modifier.settingHighlight("item_library_folder_album_art", highlightKey)
