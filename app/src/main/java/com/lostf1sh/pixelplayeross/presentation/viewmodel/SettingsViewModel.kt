@@ -936,6 +936,11 @@ class SettingsViewModel @Inject constructor(
             userPreferencesRepository.setUseFolderAlbumArt(enabled)
             com.lostf1sh.pixelplayeross.utils.AlbumArtCacheManager.clearAllCache(context)
             imageCacheManager.clearAllCoverArtCaches()
+            // Record what the cache is being rebuilt under so the app-wide reconciler recognises
+            // its own state and does not clear it again.
+            userPreferencesRepository.setFolderAlbumArtCacheState(
+                com.lostf1sh.pixelplayeross.utils.AlbumArtUtils.isFolderAlbumArtEnabled(context)
+            )
             syncManager.fullSync()
         }
     }

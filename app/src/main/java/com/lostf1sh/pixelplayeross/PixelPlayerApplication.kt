@@ -86,6 +86,9 @@ class PixelPlayerApplication : Application(), ImageLoaderFactory, Configuration.
     private val appLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) {
             libraryStateHolder.get().restoreAfterTrimIfNeeded()
+            // Returning from system settings is the moment a revoked image permission can come
+            // back; granting one does not restart the process the way revoking it does.
+            startupScope.launch { reconcileFolderAlbumArtCache() }
             m3uSyncCoordinator.get().onAppForeground()
             advancedPerformanceDiagnosticsController.get().onAppForeground()
         }
@@ -145,19 +148,36 @@ class PixelPlayerApplication : Application(), ImageLoaderFactory, Configuration.
         // leave the toggle reporting one thing while artwork resolution did another.
         startupScope.launch {
             userPreferencesRepository.get().useFolderAlbumArtFlow.collect { enabled ->
-                val update = resolveFolderAlbumArtUpdate(
-                    previous = AlbumArtUtils.folderAlbumArtPreferenceOrNull(),
-                    observed = enabled
-                )
-                if (update == FolderAlbumArtUpdate.IGNORE) return@collect
                 AlbumArtUtils.setFolderAlbumArtPreference(enabled)
-                // Every cached cover and "no art" marker was resolved under the old precedence.
-                if (update == FolderAlbumArtUpdate.MIRROR_AND_INVALIDATE) {
-                    AlbumArtCacheManager.clearAllCache(this@PixelPlayerApplication)
-                    imageCacheManager.get().clearAllCoverArtCaches()
-                }
+                reconcileFolderAlbumArtCache()
             }
         }
+    }
+
+    /**
+     * Drops cached artwork when the effective folder-cover state no longer matches the state the
+     * cache was built under.
+     *
+     * Effective state is the preference *and* the image permission, because a cover that cannot
+     * be read is indistinguishable from one that is switched off — both cache embedded art and
+     * "no art" markers that then suppress folder covers. The permission can come back without the
+     * preference ever changing (granted again in system settings), and cached artwork lives in
+     * `filesDir`, so nothing short of this reconciliation would notice.
+     */
+    private suspend fun reconcileFolderAlbumArtCache() {
+        val preferences = userPreferencesRepository.get()
+        val effective = AlbumArtUtils.isFolderAlbumArtEnabled(this)
+        val recorded = runCatching { preferences.folderAlbumArtCacheStateFlow.first() }.getOrNull()
+
+        when (resolveFolderAlbumArtUpdate(previous = recorded, observed = effective)) {
+            FolderAlbumArtUpdate.IGNORE -> return
+            FolderAlbumArtUpdate.MIRROR_ONLY -> Unit
+            FolderAlbumArtUpdate.MIRROR_AND_INVALIDATE -> {
+                AlbumArtCacheManager.clearAllCache(this)
+                imageCacheManager.get().clearAllCoverArtCaches()
+            }
+        }
+        runCatching { preferences.setFolderAlbumArtCacheState(effective) }
     }
 
     override fun newImageLoader(): ImageLoader {
