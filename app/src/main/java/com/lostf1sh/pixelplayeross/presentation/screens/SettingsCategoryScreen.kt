@@ -11,11 +11,15 @@ import androidx.compose.ui.draw.rotate
 import android.app.Activity
 import android.content.Context
 import android.net.Uri
+import android.Manifest
 import android.os.Build
 import android.os.Environment
 import android.os.SystemClock
 import android.text.format.Formatter
 import android.widget.Toast
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -63,6 +67,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.LightMode
@@ -185,7 +190,11 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 
 @androidx.annotation.OptIn(UnstableApi::class)
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(
+    ExperimentalMaterial3Api::class,
+    ExperimentalMaterial3ExpressiveApi::class,
+    ExperimentalPermissionsApi::class
+)
 @Composable
 fun SettingsCategoryScreen(
     categoryId: String,
@@ -240,6 +249,44 @@ fun SettingsCategoryScreen(
     }
     var albumArtCacheLimitDraft by remember(uiState.albumArtCacheLimitMb) {
         mutableStateOf(uiState.albumArtCacheLimitMb.toFloat())
+    }
+
+    val useFolderAlbumArt by settingsViewModel.useFolderAlbumArt.collectAsStateWithLifecycle()
+
+    // Reading a cover image next to an audio file needs READ_MEDIA_IMAGES on API 33+;
+    // READ_MEDIA_AUDIO covers audio files only. Below that, READ_EXTERNAL_STORAGE (already
+    // granted during setup) is enough, so there is nothing to request.
+    //
+    // The result is taken from the request callback rather than by observing the granted state,
+    // because a denial leaves that state unchanged and would report nothing back to the user. A
+    // partial "Select photos" grant on API 34+ also arrives here as "not granted", which is
+    // correct: it gives no access to arbitrary music folders, so the setting must stay off.
+    val folderArtRefreshingMessage = stringResource(R.string.setcat_folder_album_art_refreshing)
+    val folderArtPermissionMessage =
+        stringResource(R.string.setcat_folder_album_art_permission_required)
+    val enableFolderAlbumArt: () -> Unit = {
+        settingsViewModel.setUseFolderAlbumArt(true)
+        Toast.makeText(context, folderArtRefreshingMessage, Toast.LENGTH_SHORT).show()
+    }
+    val imagesPermissionState = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        rememberPermissionState(Manifest.permission.READ_MEDIA_IMAGES) { granted ->
+            if (granted) {
+                enableFolderAlbumArt()
+            } else {
+                Toast.makeText(context, folderArtPermissionMessage, Toast.LENGTH_LONG).show()
+            }
+        }
+    } else {
+        null
+    }
+    val onFolderAlbumArtToggled: (Boolean) -> Unit = { enabled ->
+        when {
+            !enabled -> settingsViewModel.setUseFolderAlbumArt(false)
+            // Null below API 33, where no image permission exists to request.
+            imagesPermissionState == null || imagesPermissionState.status.isGranted ->
+                enableFolderAlbumArt()
+            else -> imagesPermissionState.launchPermissionRequest()
+        }
     }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -509,6 +556,14 @@ fun SettingsCategoryScreen(
                                     onCheckedChange = { settingsViewModel.setAutoScanLrcFiles(it) },
                                     leadingIcon = { Icon(Icons.Outlined.Folder, null, tint = MaterialTheme.colorScheme.secondary) },
                                     modifier = Modifier.settingHighlight("item_library_auto_scan_lrc", highlightKey)
+                                )
+                                SwitchSettingItem(
+                                    title = stringResource(R.string.setcat_folder_album_art_title),
+                                    subtitle = stringResource(R.string.setcat_folder_album_art_subtitle),
+                                    checked = useFolderAlbumArt,
+                                    onCheckedChange = onFolderAlbumArtToggled,
+                                    leadingIcon = { Icon(Icons.Outlined.Image, null, tint = MaterialTheme.colorScheme.secondary) },
+                                    modifier = Modifier.settingHighlight("item_library_folder_album_art", highlightKey)
                                 )
                                 SettingsItem(
                                     title = stringResource(R.string.setcat_find_duplicates_title),

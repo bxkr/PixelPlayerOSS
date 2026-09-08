@@ -36,6 +36,20 @@ object AlbumArtUtils {
     // background on first access (one-time migration for art cached before bounding existed).
     private const val OVERSIZED_CACHED_ART_BYTES = 900L * 1024
 
+    // Folder covers are arbitrary user files with no size ceiling, unlike embedded pictures which
+    // a tagger already had to fit into the audio file. Refuse absurd ones before reading them
+    // whole into memory to be bounded.
+    private const val MAX_EXTERNAL_ART_BYTES = 20L * 1024 * 1024
+
+    /**
+     * Mirrors `UserPreferencesRepository.useFolderAlbumArtFlow`. AlbumArtUtils is a plain object
+     * reached from a Coil fetcher and a ContentProvider, so it cannot take a DI dependency; the
+     * value is pushed in from PixelPlayerApplication at startup and from SettingsViewModel on
+     * change, the same way as [AlbumArtCacheManager.configuredCacheLimitMb].
+     */
+    @Volatile
+    var folderAlbumArtEnabled: Boolean = false
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     // Tracks cache files currently being shrunk so rapid repeated loads of the same oversized
     // cover don't read the large blob into memory more than once concurrently.
@@ -70,8 +84,9 @@ object AlbumArtUtils {
     /**
      * Main function to get album art for local songs.
      *
-     * Local artwork is intentionally embedded-only. Falling back to folder images such as
-     * cover.jpg/thumb.jpg can pick unrelated Gallery files when music is stored in mixed
+     * Local artwork is embedded-only unless the user opts in to folder covers via
+     * [folderAlbumArtEnabled]. That opt-in exists because falling back to folder images such as
+     * cover.jpg/thumb.jpg unasked can pick unrelated Gallery files when music is stored in mixed
      * directories, and can duplicate the same image across unrelated tracks.
      */
     fun getAlbumArtUri(
@@ -181,6 +196,13 @@ object AlbumArtUtils {
             return null
         }
 
+        // Folder covers outrank embedded pictures when the user has opted in: a cover.jpg is
+        // usually the full-resolution original, while embedded art is often a downscaled copy.
+        readExternalAlbumArtBytes(resolvedPath)?.let { bytes ->
+            cacheAlbumArtBytes(appContext, bytes, songId)
+            return cachedFile.takeIf { it.exists() && it.length() > 0 }
+        }
+
         extractEmbeddedAlbumArtBytes(resolvedPath)?.let { bytes ->
             cacheAlbumArtBytes(appContext, bytes, songId)
             return cachedFile.takeIf { it.exists() && it.length() > 0 }
@@ -240,6 +262,11 @@ object AlbumArtUtils {
             noArtFile.delete()
         }
 
+        if (readExternalAlbumArtBytes(filePath) != null) {
+            noArtFile.delete()
+            return true
+        }
+
         val hasEmbeddedArt = extractEmbeddedAlbumArtBytes(filePath)?.isNotEmpty() == true
         if (hasEmbeddedArt) {
             noArtFile.delete()
@@ -261,6 +288,24 @@ object AlbumArtUtils {
         return runCatching {
             findExternalAlbumArtFile(filePath)?.let(Uri::fromFile)
         }.getOrNull()
+    }
+
+    /**
+     * Artwork bytes from a cover image sitting next to the audio file, or null when the user has
+     * not opted in, no trusted cover exists, or the candidate is too large to bound safely.
+     *
+     * On API 33+ reading these needs READ_MEDIA_IMAGES: without it [findExternalAlbumArtFile]'s
+     * `exists()` check simply fails, so this degrades to null rather than throwing.
+     */
+    internal fun readExternalAlbumArtBytes(
+        filePath: String,
+        enabled: Boolean = folderAlbumArtEnabled,
+        maxBytes: Long = MAX_EXTERNAL_ART_BYTES
+    ): ByteArray? {
+        if (!enabled) return null
+        val artFile = findExternalAlbumArtFile(filePath) ?: return null
+        if (artFile.length() > maxBytes) return null
+        return runCatching { artFile.readBytes() }.getOrNull()?.takeIf { it.isNotEmpty() }
     }
 
     internal fun findExternalAlbumArtFile(filePath: String): File? {

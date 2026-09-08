@@ -211,6 +211,7 @@ constructor(
 
         val ALBUM_ART_QUALITY = stringPreferencesKey("album_art_quality")
         val ALBUM_ART_CACHE_LIMIT_MB = intPreferencesKey("album_art_cache_limit_mb")
+        val USE_FOLDER_ALBUM_ART = booleanPreferencesKey("use_folder_album_art")
         val TAP_BACKGROUND_CLOSES_PLAYER = booleanPreferencesKey("tap_background_closes_player")
         val HAPTICS_ENABLED = booleanPreferencesKey("haptics_enabled")
         val ADVANCED_PERFORMANCE_DIAGNOSTICS_ENABLED =
@@ -1597,6 +1598,23 @@ constructor(
     suspend fun setAlbumArtCacheLimitMb(limitMb: Int) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.ALBUM_ART_CACHE_LIMIT_MB] = limitMb.coerceIn(50, 1500)
+        }
+    }
+
+    /**
+     * Whether a cover image sitting next to the audio file (cover.jpg, folder.jpg, …) should be
+     * used as album art in preference to embedded artwork. Off by default: folder images are only
+     * trusted when the user explicitly opts in, because generic directories can hold unrelated
+     * pictures. See [com.lostf1sh.pixelplayeross.utils.AlbumArtUtils.findExternalAlbumArtFile].
+     */
+    val useFolderAlbumArtFlow: Flow<Boolean> =
+        dataStore.data.map { preferences ->
+            preferences[PreferencesKeys.USE_FOLDER_ALBUM_ART] ?: false
+        }
+
+    suspend fun setUseFolderAlbumArt(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.USE_FOLDER_ALBUM_ART] = enabled
         }
     }
 

@@ -57,4 +57,61 @@ class AlbumArtUtilsTest {
         assertThat(resolved).isNull()
         root.deleteRecursively()
     }
+
+    @Test
+    fun readExternalAlbumArtBytes_returnsCoverBytesWhenEnabled() {
+        val root = createTempDirectory("album-art-test").toFile()
+        val albumDir = root.resolve("Daft Punk - Discovery").apply { mkdirs() }
+        val songFile = albumDir.resolve("One More Time.mp3").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val coverBytes = ByteArray(2048) { 7 }
+        albumDir.resolve("cover.jpg").writeBytes(coverBytes)
+
+        val resolved = AlbumArtUtils.readExternalAlbumArtBytes(songFile.absolutePath, enabled = true)
+
+        assertThat(resolved).isEqualTo(coverBytes)
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun readExternalAlbumArtBytes_returnsNullWhenDisabled() {
+        val root = createTempDirectory("album-art-test").toFile()
+        val albumDir = root.resolve("Daft Punk - Discovery").apply { mkdirs() }
+        val songFile = albumDir.resolve("Aerodynamic.mp3").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        albumDir.resolve("cover.jpg").writeBytes(ByteArray(2048) { 7 })
+
+        val resolved = AlbumArtUtils.readExternalAlbumArtBytes(songFile.absolutePath, enabled = false)
+
+        assertThat(resolved).isNull()
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun readExternalAlbumArtBytes_returnsNullWhenCoverExceedsSizeLimit() {
+        val root = createTempDirectory("album-art-test").toFile()
+        val albumDir = root.resolve("Daft Punk - Discovery").apply { mkdirs() }
+        val songFile = albumDir.resolve("Digital Love.mp3").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        albumDir.resolve("cover.jpg").writeBytes(ByteArray(4096) { 7 })
+
+        val resolved = AlbumArtUtils.readExternalAlbumArtBytes(
+            filePath = songFile.absolutePath,
+            enabled = true,
+            maxBytes = 2048L
+        )
+
+        assertThat(resolved).isNull()
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun readExternalAlbumArtBytes_stillHonoursExcludedDirectoriesWhenEnabled() {
+        val root = createTempDirectory("album-art-test").toFile()
+        val downloadsDir = root.resolve("Downloads").apply { mkdirs() }
+        val songFile = downloadsDir.resolve("Fresh Track.mp3").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        downloadsDir.resolve("cover.jpg").writeBytes(ByteArray(2048) { 5 })
+
+        val resolved = AlbumArtUtils.readExternalAlbumArtBytes(songFile.absolutePath, enabled = true)
+
+        assertThat(resolved).isNull()
+        root.deleteRecursively()
+    }
 }

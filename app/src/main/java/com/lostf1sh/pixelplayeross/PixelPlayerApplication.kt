@@ -133,6 +133,9 @@ class PixelPlayerApplication : Application(), ImageLoaderFactory, Configuration.
             if (savedLimit != null) {
                 AlbumArtCacheManager.configuredCacheLimitMb = savedLimit.toLong()
             }
+            AlbumArtUtils.folderAlbumArtEnabled = runCatching {
+                userPreferencesRepository.get().useFolderAlbumArtFlow.first()
+            }.getOrDefault(false)
         }
     }
 
